@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Generation Forecasting & Variance Agent</title>
+<style>
+:root{font-family:Inter,Segoe UI,Arial,sans-serif;color:#182230;background:#f3f6f8}
+*{box-sizing:border-box}body{margin:0}.top{background:#12372a;color:white;padding:28px max(20px,calc((100% - 1100px)/2))}
+.top p{color:#d8e8df;margin-bottom:0}.wrap{max-width:1100px;margin:24px auto;padding:0 18px}
+.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}.card{background:white;border:1px solid #dce4e8;border-radius:14px;padding:18px;margin-bottom:16px;box-shadow:0 3px 12px #183b2910}
+.kpi{font-size:24px;font-weight:700;margin-top:8px}.muted{color:#5d6b78;font-size:13px}.row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+button,select{border:0;border-radius:8px;padding:11px 14px;font:inherit}button{background:#176344;color:white;cursor:pointer}button:hover{background:#104b33}select{border:1px solid #ccd6dc;background:white}
+pre{white-space:pre-wrap;overflow:auto;background:#f7faf8;border:1px solid #e1e8e4;border-radius:8px;padding:14px;font-size:13px}
+table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;padding:10px;border-bottom:1px solid #e7ecef}th{background:#f7f9fa}
+.good{color:#147443}.bad{color:#b54730}.error{color:#b42318}.scroll{overflow-x:auto}
+@media(max-width:760px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.top{padding:24px 18px}.kpi{font-size:20px}}
+</style>
+</head>
+<body>
+<header class="top"><h1>Power Generation Forecasting & Variance Agent</h1>
+<p>Baseline ML forecast, actual-versus-forecast analysis, and explainable operational signals.</p></header>
+<main class="wrap">
+<section class="grid">
+ <div class="card"><div class="muted">Dataset records</div><div class="kpi" id="records">—</div></div>
+ <div class="card"><div class="muted">Total forecast (MWh)</div><div class="kpi" id="forecast">—</div></div>
+ <div class="card"><div class="muted">Total actual (MWh)</div><div class="kpi" id="actual">—</div></div>
+ <div class="card"><div class="muted">Mean absolute variance (MWh)</div><div class="kpi" id="variance">—</div></div>
+</section>
+<section class="card">
+ <div class="row"><div><h2>Analyze a day</h2><p class="muted">Choose a date from the bundled dataset or run the latest available day.</p></div>
+ <div><select id="date"><option value="">Latest date</option></select> <button id="run">Run analysis</button></div></div>
+ <div id="result"><p class="muted">Loading dataset and evaluation...</p></div>
+</section>
+<section class="card"><h2>Model evaluation</h2><p class="muted">Chronological holdout: the earlier 80% of records are used for training and the final 20% for testing.</p><div id="metrics">Loading...</div></section>
+<section class="card"><h2>Daily variance table</h2><p class="muted">Variance = actual generation − provided forecast. Positive means above forecast; negative means below forecast.</p>
+<div class="scroll"><table><thead><tr><th>Date</th><th>Forecast</th><th>Actual</th><th>Variance (MWh)</th><th>Variance (%)</th><th>Outage</th></tr></thead><tbody id="tbody"></tbody></table></div></section>
+<section class="card"><h2>Method and limitations</h2><p>This prototype uses standardized Linear Regression as an interpretable baseline. A rule-based explanation layer flags potentially relevant irradiation, temperature, wind, and outage conditions. These are indicators, not proof of causality.</p><ul><li>Only 60 dummy daily records are available.</li><li>Model quality may vary with this small dataset; compare MAE and RMSE rather than relying on R² alone.</li><li>Production use requires more historical data, asset-specific details, weather forecasts, and maintenance/curtailment logs.</li></ul></section>
+</main>
+<script>
+const fmt = (n) => n === null || n === undefined ? "N/A" : Number(n).toFixed(2);
+async function getJson(url, options){const r=await fetch(url,options);if(!r.ok){let msg="Request failed";try{msg=(await r.json()).detail||msg}catch{}throw new Error(msg)}return r.json()}
+function renderResult(payload){
+ const r=payload.result;
+ const cls=r.variance_mwh>=0?"good":"bad";
+ document.getElementById("result").innerHTML = `
+ <div class="grid">
+ <div><div class="muted">Date</div><strong>${r.date}</strong></div>
+ <div><div class="muted">Forecast</div><strong>${fmt(r.forecast_mwh)} MWh</strong></div>
+ <div><div class="muted">Actual</div><strong>${fmt(r.actual_mwh)} MWh</strong></div>
+ <div><div class="muted">Variance</div><strong class="${cls}">${fmt(r.variance_mwh)} MWh (${fmt(r.variance_pct)}%)</strong></div>
+ </div><p><b>ML-predicted actual generation:</b> ${fmt(r.model_predicted_actual_mwh)} MWh</p>
+ <p><b>Observed conditions:</b> Irradiance ${r.irradiance_wm2} W/m² · Wind ${r.wind_speed_ms} m/s · Temperature ${r.temperature_c} °C · Outage flag ${r.outage_flag}</p>
+ <h3>Explanation signals</h3><ul>${r.explanation.map(x=>`<li>${x}</li>`).join("")}</ul>
+ <details><summary>Method and limitations returned by API</summary><p>${payload.method}</p><ul>${payload.limitations.map(x=>`<li>${x}</li>`).join("")}</ul></details>`;
+}
+async function init(){
+ try{
+  const [summary,records]=await Promise.all([getJson("/api/summary"),getJson("/api/records")]);
+  document.getElementById("records").textContent=summary.records;
+  document.getElementById("forecast").textContent=fmt(summary.total_forecast_mwh);
+  document.getElementById("actual").textContent=fmt(summary.total_actual_mwh);
+  document.getElementById("variance").textContent=fmt(summary.mean_absolute_variance_mwh);
+  const sel=document.getElementById("date");
+  records.records.forEach(r=>{const o=document.createElement("option");o.value=r.date;o.textContent=r.date;sel.appendChild(o)});
+  const e=summary.evaluation;
+  document.getElementById("metrics").innerHTML=`<div class="grid">
+   <div><div class="muted">Model MAE (MWh)</div><div class="kpi">${fmt(e.mae_mwh)}</div></div>
+   <div><div class="muted">Model RMSE (MWh)</div><div class="kpi">${fmt(e.rmse_mwh)}</div></div>
+   <div><div class="muted">Model R²</div><div class="kpi">${fmt(e.r2)}</div></div>
+   <div><div class="muted">Provided forecast MAE (MWh)</div><div class="kpi">${fmt(e.provided_forecast_mae_mwh)}</div></div></div>
+   <p class="muted">MAE and RMSE are error measures in MWh; lower is better. R² can be unstable on a small holdout.</p>`;
+  document.getElementById("tbody").innerHTML=records.records.map(r=>`<tr><td>${r.date}</td><td>${fmt(r.forecast_mwh)}</td><td>${fmt(r.actual_mwh)}</td><td class="${r.variance_mwh>=0?'good':'bad'}">${fmt(r.variance_mwh)}</td><td>${fmt(r.variance_pct)}%</td><td>${r.outage_flag}</td></tr>`).join("");
+  await runAnalysis();
+ }catch(e){document.getElementById("result").innerHTML=`<p class="error">Could not load app data: ${e.message}. Check that the FastAPI server is running.</p>`}
+}
+async function runAnalysis(){
+ const date=document.getElementById("date").value;
+ const box=document.getElementById("result");box.innerHTML="<p>Running analysis...</p>";
+ try{const payload=await getJson("/api/run",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({date:date||null})});renderResult(payload)}
+ catch(e){box.innerHTML=`<p class="error">${e.message}</p>`}
+}
+document.getElementById("run").addEventListener("click",runAnalysis);
+init();
+</script>
+</body></html>
